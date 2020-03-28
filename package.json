@@ -1,0 +1,32 @@
+{
+  "name": "github-sync",
+  "version": "0.0.1",
+  "description": "",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1",
+    "start": "parcel index.html --no-autoinstall --open"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "devDependencies": {
+    "@babel/core": "^7.9.0",
+    "@babel/preset-env": "^7.9.0",
+    "@babel/preset-react": "^7.9.4",
+    "@babel/polyfill": "^7.8.7",
+    "parcel-bundler": "^1.12.4",
+    "postcss-modules": "^1.5.0",
+    "tailwindcss": "^1.2.0"
+  },
+  "dependencies": {
+    "@babel/runtime-corejs2": "^7.9.2",
+    "@octokit/rest": "^17.1.4",
+    "date-fns": "^2.11.1",
+    "query-string": "^6.11.1",
+    "ramda": "^0.27.0",
+    "react": "^16.3.1",
+    "react-dom": "^16.3.1",
+    "xstate": "^4.7.8"
+  }
+}
