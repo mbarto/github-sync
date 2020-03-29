@@ -4,6 +4,9 @@ import Commits from "./commits"
 import Confirm from "./confirm"
 import {pipe, none} from "ramda"
 import { formatISO, subDays } from 'date-fns'
+import { createMachine, assign } from 'xstate';
+import { useMachine } from "@xstate/react"
+import Spinner from "react-spinkit"
 
 const getAuthor = (commit) => commit.commit.author.name + "," + commit.commit.author.email + ","
     + commit.commit.author.date
@@ -20,7 +23,15 @@ const fillMissing = ([from, to]) => ({
 })
 
 const replaceCommit = (commits, sha, commit) => commits.map(c => c.sha === sha ? commit : c)
-    
+
+const setCommits = (context, event) => event.commits
+
+const match = (state, cases) => {
+    return Object.keys(cases).reduce((previous, current) => {
+        return state.matches(current) ? cases[current] : previous
+    }, () => null)()
+}
+
 export default ({params = {}}) => {
     const {owner, repo, from, to, token, days} = params
     if (!token) {
@@ -29,45 +40,113 @@ export default ({params = {}}) => {
     if (!owner || !repo || !from || !to) {
         return <div>owner, repo, from and to are mandatory params</div>
     }
-    const [error, setError] = useState(null)
     const octokit = new Octokit({
         auth: token
     })
-    const [commits, setCommits] = useState(null)
+
     const branches = {from, to}
-    useEffect(() => {
-        Promise.all(["from", "to"].map(branch => octokit.repos.listCommits({
-            owner,
-            repo,
-            sha: branches[branch],
-            per_page: 1000,
-            since: formatISO(subDays(new Date(), days || 60))
-        })))
-        .then((responses) => responses.map(c => c.data))
-        .then(pipe(fillMissing, setCommits))
-        .catch(e => setError(e))
-        
-    }, [owner, repo, from, to])
+
+    const loadCommits = () => Promise.all(["from", "to"].map(branch => octokit.repos.listCommits({
+        owner,
+        repo,
+        sha: branches[branch],
+        per_page: 1000,
+        since: formatISO(subDays(new Date(), days || 60))
+    }))).then((responses) => responses.map(c => c.data))
+
+    const syncMachine = createMachine({
+        id: 'sync',
+        initial: 'loading',
+        context: {
+            commits: {from: [], to: []},
+            confirm: null,
+            error: null
+        },
+        states: {
+            loading: {
+                invoke: {
+                    id: 'loadCommits',
+                    src: loadCommits,
+                    onDone: {
+                      target: 'sync',
+                      actions: assign({
+                        commits: (context, event) => fillMissing(event.data)
+                      })
+                    },
+                    onError: {
+                      target: 'loaderror',
+                      actions: assign({ error: (context, event) => event.data })
+                    }
+                }
+            },
+            loaderror: {},
+            sync: {
+                initial: 'idle',
+                states: {
+                    idle: {
+                        on: {
+                            confirmPick: {
+                                target: 'askconfirm',
+                                actions: assign({
+                                    confirm: (context, event) => event.handlers
+                                })
+                            }
+                        }
+                    },
+                    askconfirm: {
+                        on: {
+                            cancel: 'idle',
+                            updating: {
+                                target: 'picking'
+                            }
+                        }
+                    },
+                    picking: {
+                        on: {
+                            update: {
+                                target: 'idle',
+                                actions: assign({
+                                    commits: setCommits
+                                })
+                            },
+                            error: {
+                                target: 'pickerror',
+                                actions: assign({
+                                    error: (context, event) => event.error
+                                })
+                            }
+                        }
+                    },
+                    pickerror: {}
+                }
+                
+            }
+        }
+    })
+
+    const [state, send] = useMachine(syncMachine, {});
+    const {commits, confirm, error} = state.context
     
     const goToIssue = (issue) => `https://github.com/${owner}/${repo}/issues/${issue}`
     const getHead = (commits) => commits.filter(c => !c.missing)[0].sha
 
-    const [confirm, setConfirm] = useState(null)
-
     const withConfirm = (callback) => (...params) => {
-        setConfirm({
-            handler: () => {
-                callback(...params)
-                setConfirm(null)
-            },
-            cancel: () => {
-                setConfirm(null)
+        send('confirmPick', {
+            handlers: {
+                handler: () => {
+                    callback(...params)
+                    send('cancel')
+                },
+                cancel: () => {
+                    send('cancel')
+                }
             }
         })
     }
     const cherryPick = withConfirm(async (sha, commit) => {
         const {author, committer, message, tree} = commit
         try {
+            send('updating')
             const newCommit = await octokit.git.createCommit({
                 owner,
                 repo,
@@ -83,28 +162,31 @@ export default ({params = {}}) => {
                 ref: `heads/${to}`,
                 sha: newCommit.data.sha,
             })
-            setCommits({
-                from: commits.from, 
-                to: replaceCommit(commits.to, sha, {...newCommit.data, commit})
+            send('update', {
+                commits: {
+                    from: commits.from, 
+                    to: replaceCommit(commits.to, sha, {...newCommit.data, commit})
+                }
             })
-        } catch(e) {
-            setError(e)
+        } catch(error) {
+            send('error', {error})
         }
     })
-
-    return commits && (
-        <div className="bg-gray-700 p-6">
-                <div className="text-xl text-white text-center">{owner}/{repo}</div>
-                <div className="flex">
-                    {["from", "to"].map(branch => <div className="flex-1" key={branch}><Commits commits={commits[branch]} branch={branch}
-                        goToIssue={goToIssue} cherryPick={cherryPick}/></div>)}
-                </div>
-                {confirm && 
-                    <Confirm message={"Do you want to cherry-pick the selected commit?"}
-                        onConfirm={confirm.handler}
-                        onCancel={confirm.cancel}
-                    />}
-                {error && <div>{error.message || error}</div>}
-        </div>
-    ) || <div>Loading...</div>
+    return match(state, {
+        loaderror: () => <div>Error loading repositories info: {error.message}</div>,
+        loading: () => <div className="flex items-center justify-center h-screen w-screen fixed top-0 left-0"><Spinner/></div>,
+        sync: () => (<div className="bg-gray-700 p-6">
+            <div className="text-xl text-white text-center">{owner}/{repo}</div>
+            <div className="flex">
+                {["from", "to"].map(branch => <div className="flex-1" key={branch}><Commits commits={commits[branch]} branch={branches[branch]}
+                    goToIssue={goToIssue} cherryPick={cherryPick}/></div>)}
+            </div>
+            {state.matches('sync.picking') && <div className="flex items-center justify-center h-screen w-screen fixed top-0 left-0"><Spinner color="orange"/></div>}
+            {state.matches('sync.askconfirm') && <Confirm message={"Do you want to cherry-pick the selected commit?"}
+                onConfirm={confirm.handler}
+                onCancel={confirm.cancel}
+            />}
+            {error && <div>{error.message || error}</div>}
+        </div>)
+    })
 }

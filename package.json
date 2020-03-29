@@ -22,11 +22,13 @@
   "dependencies": {
     "@babel/runtime-corejs2": "^7.9.2",
     "@octokit/rest": "^17.1.4",
+    "@xstate/react": "^0.8.1",
     "date-fns": "^2.11.1",
     "query-string": "^6.11.1",
     "ramda": "^0.27.0",
     "react": "^16.3.1",
     "react-dom": "^16.3.1",
+    "react-spinkit": "^3.0.0",
     "xstate": "^4.7.8"
   }
 }
