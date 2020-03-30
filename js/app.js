@@ -24,8 +24,6 @@ const fillMissing = ([from, to]) => ({
 
 const replaceCommit = (commits, sha, commit) => commits.map(c => c.sha === sha ? commit : c)
 
-const setCommits = (context, event) => event.commits
-
 const match = (state, cases) => {
     return Object.keys(cases).reduce((previous, current) => {
         return state.matches(current) ? cases[current] : previous
@@ -46,14 +44,6 @@ export default ({params = {}}) => {
 
     const branches = {from, to}
 
-    const loadCommits = () => Promise.all(["from", "to"].map(branch => octokit.repos.listCommits({
-        owner,
-        repo,
-        sha: branches[branch],
-        per_page: 1000,
-        since: formatISO(subDays(new Date(), days || 60))
-    }))).then((responses) => responses.map(c => c.data))
-
     const syncMachine = createMachine({
         id: 'sync',
         initial: 'loading',
@@ -66,16 +56,14 @@ export default ({params = {}}) => {
             loading: {
                 invoke: {
                     id: 'loadCommits',
-                    src: loadCommits,
+                    src: 'loadCommits',
                     onDone: {
                       target: 'sync',
-                      actions: assign({
-                        commits: (context, event) => fillMissing(event.data)
-                      })
+                      actions: 'loadCommits'
                     },
                     onError: {
                       target: 'loaderror',
-                      actions: assign({ error: (context, event) => event.data })
+                      actions: 'setError'
                     }
                 }
             },
@@ -87,9 +75,7 @@ export default ({params = {}}) => {
                         on: {
                             confirmPick: {
                                 target: 'askconfirm',
-                                actions: assign({
-                                    confirm: (context, event) => event.handlers
-                                })
+                                actions: 'setConfirm'
                             }
                         }
                     },
@@ -105,15 +91,11 @@ export default ({params = {}}) => {
                         on: {
                             update: {
                                 target: 'idle',
-                                actions: assign({
-                                    commits: setCommits
-                                })
+                                actions: 'updateCommits'
                             },
                             error: {
                                 target: 'pickerror',
-                                actions: assign({
-                                    error: (context, event) => event.error
-                                })
+                                actions: 'setError'
                             }
                         }
                     },
@@ -121,6 +103,28 @@ export default ({params = {}}) => {
                 }
                 
             }
+        }
+    }, {
+        actions: {
+            loadCommits: assign({
+                commits: (context, event) => fillMissing(event.data)
+            }),
+            updateCommits: assign({
+                commits: (context, event) => event.commits
+            }),
+            setError: assign({ error: (context, event) => event.error || event.data }),
+            setConfirm: assign({
+                confirm: (context, event) => event.handlers
+            })
+        },
+        services: {
+            loadCommits: Promise.all(["from", "to"].map(branch => octokit.repos.listCommits({
+                owner,
+                repo,
+                sha: branches[branch],
+                per_page: 1000,
+                since: formatISO(subDays(new Date(), days || 60))
+            }))).then((responses) => responses.map(c => c.data))
         }
     })
 
