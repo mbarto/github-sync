@@ -1,8 +1,8 @@
-import React, {useEffect, useState} from "react"
+import React from "react"
 import {Octokit} from "@octokit/rest"
 import Commits from "./commits"
 import Confirm from "./confirm"
-import {pipe, none} from "ramda"
+import {none} from "ramda"
 import { formatISO, subDays } from 'date-fns'
 import { createMachine, assign } from 'xstate';
 import { useMachine } from "@xstate/react"
@@ -58,6 +58,77 @@ const confirmMachine = createMachine({
     }
 })
 
+const syncMachine = createMachine({
+    id: 'sync',
+    initial: 'loading',
+    context: {
+        commits: {from: [], to: []},
+        confirm: null,
+        error: null
+    },
+    states: {
+        loading: {
+            invoke: {
+                id: 'loadCommits',
+                src: 'loadCommits',
+                onDone: {
+                  target: 'sync',
+                  actions: 'loadCommits'
+                },
+                onError: {
+                  target: 'loaderror',
+                  actions: 'setError'
+                }
+            }
+        },
+        loaderror: {},
+        sync: {
+            initial: 'idle',
+            states: {
+                idle: {
+                    on: {
+                        confirmPick: {
+                            target: 'askconfirm'
+                        }
+                    }
+                },
+                askconfirm: {
+                    invoke: {
+                        id: "confirm",
+                        src: "confirm",
+                        data: {
+                            payload: (context, event) => event.data
+                        },
+                        autoForward: true,
+                        onDone: [{
+                            target: 'picking',
+                            cond: (context, event) => event.data.confirmed
+                        }, {
+                            target: 'idle',
+                            cond: (context, event) => !event.data.confirmed
+                        }]
+                    }
+                },
+                picking: {
+                    invoke: {
+                        id: "pick",
+                        src: "pick",
+                        onDone: {
+                            target: 'idle',
+                            actions: 'updateCommits'
+                        },
+                        onError: {
+                            target: 'pickerror',
+                            actions: 'setError'
+                        }
+                    }
+                },
+                pickerror: {}
+            }
+        }
+    }
+})
+
 export default ({params = {}}) => {
     const {owner, repo, from, to, token, days} = params
     if (!token) {
@@ -72,77 +143,7 @@ export default ({params = {}}) => {
 
     const branches = {from, to}
 
-    const syncMachine = createMachine({
-        id: 'sync',
-        initial: 'loading',
-        context: {
-            commits: {from: [], to: []},
-            confirm: null,
-            error: null
-        },
-        states: {
-            loading: {
-                invoke: {
-                    id: 'loadCommits',
-                    src: 'loadCommits',
-                    onDone: {
-                      target: 'sync',
-                      actions: 'loadCommits'
-                    },
-                    onError: {
-                      target: 'loaderror',
-                      actions: 'setError'
-                    }
-                }
-            },
-            loaderror: {},
-            sync: {
-                initial: 'idle',
-                states: {
-                    idle: {
-                        on: {
-                            confirmPick: {
-                                target: 'askconfirm'
-                            }
-                        }
-                    },
-                    askconfirm: {
-                        invoke: {
-                            id: "confirm",
-                            src: "confirm",
-                            data: {
-                                payload: (context, event) => event.data
-                            },
-                            autoForward: true,
-                            onDone: [{
-                                target: 'picking',
-                                cond: (context, event) => event.data.confirmed
-                            }, {
-                                target: 'idle',
-                                cond: (context, event) => !event.data.confirmed
-                            }]
-                        }
-                    },
-                    picking: {
-                        invoke: {
-                            id: "pick",
-                            src: "pick",
-                            onDone: {
-                                target: 'idle',
-                                actions: 'updateCommits'
-                            },
-                            onError: {
-                                target: 'pickerror',
-                                actions: 'setError'
-                            }
-                        }
-                    },
-                    pickerror: {}
-                }
-                
-            }
-        }
-    }, {
+    const [state, send] = useMachine(syncMachine, {
         actions: {
             loadCommits: assign({
                 commits: (context, event) => fillMissing(event.data)
@@ -163,9 +164,7 @@ export default ({params = {}}) => {
             confirm: confirmMachine,
             pick: (context, event) => cherryPick(context.commits, event.data.confirmed)
         }
-    })
-
-    const [state, send] = useMachine(syncMachine, {});
+    });
     const {commits, error} = state.context
     
     const goToIssue = (issue) => `https://github.com/${owner}/${repo}/issues/${issue}`
@@ -200,7 +199,7 @@ export default ({params = {}}) => {
         send('confirmPick', {
             data: {
                 sha,
-                commit
+               commit
             }
         })
     }
