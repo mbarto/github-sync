@@ -30,6 +30,34 @@ const match = (state, cases) => {
     }, () => null)()
 }
 
+const confirmMachine = createMachine({
+    id: 'confirm',
+    initial: 'ask',
+    context: {
+        payload: null
+    },
+    states: {
+        ask: {
+            on: {
+                confirm: 'confirmed',
+                cancel: 'canceled'
+            }
+        },
+        confirmed: {
+            type: "final",
+            data: {
+                confirmed: (context, event) => context.payload
+            }
+        },
+        canceled: {
+            type: "final",
+            data: {
+                confirmed: false
+            }
+        }
+    }
+})
+
 export default ({params = {}}) => {
     const {owner, repo, from, to, token, days} = params
     if (!token) {
@@ -74,26 +102,36 @@ export default ({params = {}}) => {
                     idle: {
                         on: {
                             confirmPick: {
-                                target: 'askconfirm',
-                                actions: 'setConfirm'
+                                target: 'askconfirm'
                             }
                         }
                     },
                     askconfirm: {
-                        on: {
-                            cancel: 'idle',
-                            updating: {
-                                target: 'picking'
-                            }
+                        invoke: {
+                            id: "confirm",
+                            src: "confirm",
+                            data: {
+                                payload: (context, event) => event.data
+                            },
+                            autoForward: true,
+                            onDone: [{
+                                target: 'picking',
+                                cond: (context, event) => event.data.confirmed
+                            }, {
+                                target: 'idle',
+                                cond: (context, event) => !event.data.confirmed
+                            }]
                         }
                     },
                     picking: {
-                        on: {
-                            update: {
+                        invoke: {
+                            id: "pick",
+                            src: "pick",
+                            onDone: {
                                 target: 'idle',
                                 actions: 'updateCommits'
                             },
-                            error: {
+                            onError: {
                                 target: 'pickerror',
                                 actions: 'setError'
                             }
@@ -110,12 +148,9 @@ export default ({params = {}}) => {
                 commits: (context, event) => fillMissing(event.data)
             }),
             updateCommits: assign({
-                commits: (context, event) => event.commits
+                commits: (context, event) => event.data.commits
             }),
-            setError: assign({ error: (context, event) => event.error || event.data }),
-            setConfirm: assign({
-                confirm: (context, event) => event.handlers
-            })
+            setError: assign({ error: (context, event) => event.error || event.data })
         },
         services: {
             loadCommits: Promise.all(["from", "to"].map(branch => octokit.repos.listCommits({
@@ -124,58 +159,51 @@ export default ({params = {}}) => {
                 sha: branches[branch],
                 per_page: 1000,
                 since: formatISO(subDays(new Date(), days || 60))
-            }))).then((responses) => responses.map(c => c.data))
+            }))).then((responses) => responses.map(c => c.data)),
+            confirm: confirmMachine,
+            pick: (context, event) => cherryPick(context.commits, event.data.confirmed)
         }
     })
 
     const [state, send] = useMachine(syncMachine, {});
-    const {commits, confirm, error} = state.context
+    const {commits, error} = state.context
     
     const goToIssue = (issue) => `https://github.com/${owner}/${repo}/issues/${issue}`
     const getHead = (commits) => commits.filter(c => !c.missing)[0].sha
 
-    const withConfirm = (callback) => (...params) => {
-        send('confirmPick', {
-            handlers: {
-                handler: () => {
-                    callback(...params)
-                    send('cancel')
-                },
-                cancel: () => {
-                    send('cancel')
-                }
-            }
-        })
-    }
-    const cherryPick = withConfirm(async (sha, commit) => {
+    const cherryPick = (commits, {sha, commit}) => {
         const {author, committer, message, tree} = commit
-        try {
-            send('updating')
-            const newCommit = await octokit.git.createCommit({
-                owner,
-                repo,
-                message,
-                tree: tree.sha,
-                author,
-                committer,
-                parents: [getHead(commits.to)]
-            })
-            await octokit.git.updateRef({
+        return octokit.git.createCommit({
+            owner,
+            repo,
+            message,
+            tree: tree.sha,
+            author,
+            committer,
+            parents: [getHead(commits.to)]
+        }).then((newCommit) => 
+            octokit.git.updateRef({
                 owner,
                 repo,
                 ref: `heads/${to}`,
                 sha: newCommit.data.sha,
-            })
-            send('update', {
+            }).then(() => ({
                 commits: {
                     from: commits.from, 
                     to: replaceCommit(commits.to, sha, {...newCommit.data, commit})
                 }
-            })
-        } catch(error) {
-            send('error', {error})
-        }
-    })
+            }))
+        )
+    };
+
+    const askConfirm = (sha, commit) => {
+        send('confirmPick', {
+            data: {
+                sha,
+                commit
+            }
+        })
+    }
     return match(state, {
         loaderror: () => <div>Error loading repositories info: {error.message}</div>,
         loading: () => <div className="flex items-center justify-center h-screen w-screen fixed top-0 left-0"><Spinner/></div>,
@@ -183,12 +211,12 @@ export default ({params = {}}) => {
             <div className="text-xl text-white text-center">{owner}/{repo}</div>
             <div className="flex">
                 {["from", "to"].map(branch => <div className="flex-1" key={branch}><Commits commits={commits[branch]} branch={branches[branch]}
-                    goToIssue={goToIssue} cherryPick={cherryPick}/></div>)}
+                    goToIssue={goToIssue} cherryPick={askConfirm}/></div>)}
             </div>
             {state.matches('sync.picking') && <div className="flex items-center justify-center h-screen w-screen fixed top-0 left-0"><Spinner color="orange"/></div>}
             {state.matches('sync.askconfirm') && <Confirm message={"Do you want to cherry-pick the selected commit?"}
-                onConfirm={confirm.handler}
-                onCancel={confirm.cancel}
+                onConfirm={() => send('confirm')}
+                onCancel={() => send('cancel')}
             />}
             {error && <div>{error.message || error}</div>}
         </div>)
