@@ -2,6 +2,79 @@
 
 @tailwind components;
 
+.app {
+    @apply bg-gray-700 p-6
+}
+
+.app .title {
+    @apply text-xl text-white text-center
+}
+
+.app .main {
+    @apply flex
+}
+
+.column {
+    @apply flex-1
+}
+
+.modal {
+    @apply flex items-center justify-center h-screen w-screen fixed top-0 left-0
+}
+
+.modal > div {
+    @apply bg-white text-black font-bold rounded-lg border shadow-lg p-5
+}
+
+.modal .buttons {
+    @apply p-5 text-center
+}
+
+.buttons button {
+    @apply text-white font-bold py-2 px-4 rounded m-2
+}
+
+button.primary {
+    @apply bg-green-500
+}
+
+button.secondary {
+    @apply bg-red-500
+}
+
+button.primary:hover {
+    @apply bg-green-700
+}
+
+button.secondary:hover {
+    @apply bg-red-700
+}
+
+.commits .title {
+    @apply p-3 text-base text-gray-300 text-center
+}
+
+.card {
+    @apply m-3 p-6 bg-white rounded-lg shadow-xl h-64 overflow-hidden
+}
+
+.card .link {
+    @apply font-bold underline
+}
+
+.missing {
+    @apply transition duration-500 ease-in-out transform flex items-center justify-center border-orange-600 border-2 border-dashed cursor-pointer
+}
+
+.missing:hover {
+    @apply scale-105 -translate-y-1
+}
+
+.missing .action {
+    @apply font-bold text-6xl
+}
+
+
 @tailwind utilities;
 
 @tailwind screens;

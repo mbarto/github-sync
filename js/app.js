@@ -205,14 +205,14 @@ export default ({params = {}}) => {
     }
     return match(state, {
         loaderror: () => <div>Error loading repositories info: {error.message}</div>,
-        loading: () => <div className="flex items-center justify-center h-screen w-screen fixed top-0 left-0"><Spinner/></div>,
-        sync: () => (<div className="bg-gray-700 p-6">
-            <div className="text-xl text-white text-center">{owner}/{repo}</div>
-            <div className="flex">
-                {["from", "to"].map(branch => <div className="flex-1" key={branch}><Commits commits={commits[branch]} branch={branches[branch]}
+        loading: () => <div className="modal"><Spinner/></div>,
+        sync: () => (<div className="app">
+            <div className="title">{owner}/{repo}</div>
+            <div className="main">
+                {["from", "to"].map(branch => <div className="column" key={branch}><Commits commits={commits[branch]} branch={branches[branch]}
                     goToIssue={goToIssue} cherryPick={askConfirm}/></div>)}
             </div>
-            {state.matches('sync.picking') && <div className="flex items-center justify-center h-screen w-screen fixed top-0 left-0"><Spinner color="orange"/></div>}
+            {state.matches('sync.picking') && <div className="modal"><Spinner color="orange"/></div>}
             {state.matches('sync.askconfirm') && <Confirm message={"Do you want to cherry-pick the selected commit?"}
                 onConfirm={() => send('confirm')}
                 onCancel={() => send('cancel')}
