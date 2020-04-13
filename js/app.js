@@ -1,12 +1,13 @@
 import React from "react"
 import {Octokit} from "@octokit/rest"
 import Commits from "./commits"
-import Confirm from "./confirm"
+import {confirmMachine} from "./confirm"
 import {none} from "ramda"
 import { formatISO, subDays } from 'date-fns'
 import { createMachine, assign } from 'xstate';
-import { useMachine } from "@xstate/react"
 import Spinner from "react-spinkit"
+import {createMachineUI} from "./machine-ui"
+import {curry} from "ramda"
 
 const getAuthor = (commit) => commit.commit.author.name + "," + commit.commit.author.email + ","
     + commit.commit.author.date
@@ -30,33 +31,7 @@ const match = (state, cases) => {
     }, () => null)()
 }
 
-const confirmMachine = createMachine({
-    id: 'confirm',
-    initial: 'ask',
-    context: {
-        payload: null
-    },
-    states: {
-        ask: {
-            on: {
-                confirm: 'confirmed',
-                cancel: 'canceled'
-            }
-        },
-        confirmed: {
-            type: "final",
-            data: {
-                confirmed: (context, event) => context.payload
-            }
-        },
-        canceled: {
-            type: "final",
-            data: {
-                confirmed: false
-            }
-        }
-    }
-})
+const goToIssue = curry((owner, repo, issue) => `https://github.com/${owner}/${repo}/issues/${issue}`)
 
 const syncMachine = createMachine({
     id: 'sync',
@@ -68,6 +43,9 @@ const syncMachine = createMachine({
     },
     states: {
         loading: {
+            meta: {
+                component: () => <div className="modal"><Spinner/></div>
+            },
             invoke: {
                 id: 'loadCommits',
                 src: 'loadCommits',
@@ -84,6 +62,23 @@ const syncMachine = createMachine({
         loaderror: {},
         sync: {
             initial: 'idle',
+            meta: {
+                component: ({send, owner = "", repo = "", branches = {}, commits = {}, children}) => (<div className="app">
+                    <div className="title">{owner}/{repo}</div>
+                    <div className="main">
+                        {["from", "to"].map(branch => <div className="column" key={branch}><Commits commits={commits[branch]} branch={branches[branch]}
+                            goToIssue={goToIssue(owner, repo)} cherryPick={(sha, commit) => {
+                                send('confirmPick', {
+                                    data: {
+                                        sha,
+                                       commit
+                                    }
+                                })
+                            }}/></div>)}
+                        {children}
+                    </div>
+                </div>)
+            },
             states: {
                 idle: {
                     on: {
@@ -99,17 +94,19 @@ const syncMachine = createMachine({
                         data: {
                             payload: (context, event) => event.data
                         },
-                        autoForward: true,
                         onDone: [{
                             target: 'picking',
-                            cond: (context, event) => event.data.confirmed
+                            cond: (context, event) => event.data && event.data.confirmed
                         }, {
                             target: 'idle',
-                            cond: (context, event) => !event.data.confirmed
+                            cond: (context, event) => !event.data || !event.data.confirmed
                         }]
                     }
                 },
                 picking: {
+                    meta: {
+                        component: () => <div className="modal"><Spinner color="orange"/></div>
+                    },
                     invoke: {
                         id: "pick",
                         src: "pick",
@@ -129,6 +126,8 @@ const syncMachine = createMachine({
     }
 })
 
+const getHead = (commits) => commits.filter(c => !c.missing)[0].sha
+
 export default ({params = {}}) => {
     const {owner, repo, from, to, token, days} = params
     if (!token) {
@@ -142,8 +141,7 @@ export default ({params = {}}) => {
     })
 
     const branches = {from, to}
-
-    const [state, send] = useMachine(syncMachine, {
+    const App = createMachineUI(syncMachine, {
         actions: {
             loadCommits: assign({
                 commits: (context, event) => fillMissing(event.data)
@@ -154,7 +152,7 @@ export default ({params = {}}) => {
             setError: assign({ error: (context, event) => event.error || event.data })
         },
         services: {
-            loadCommits: Promise.all(["from", "to"].map(branch => octokit.repos.listCommits({
+            loadCommits: () => Promise.all(["from", "to"].map(branch => octokit.repos.listCommits({
                 owner,
                 repo,
                 sha: branches[branch],
@@ -162,62 +160,32 @@ export default ({params = {}}) => {
                 since: formatISO(subDays(new Date(), days || 60))
             }))).then((responses) => responses.map(c => c.data)),
             confirm: confirmMachine,
-            pick: (context, event) => cherryPick(context.commits, event.data.confirmed)
-        }
-    });
-    const {commits, error} = state.context
-    
-    const goToIssue = (issue) => `https://github.com/${owner}/${repo}/issues/${issue}`
-    const getHead = (commits) => commits.filter(c => !c.missing)[0].sha
-
-    const cherryPick = (commits, {sha, commit}) => {
-        const {author, committer, message, tree} = commit
-        return octokit.git.createCommit({
-            owner,
-            repo,
-            message,
-            tree: tree.sha,
-            author,
-            committer,
-            parents: [getHead(commits.to)]
-        }).then((newCommit) => 
-            octokit.git.updateRef({
-                owner,
-                repo,
-                ref: `heads/${to}`,
-                sha: newCommit.data.sha,
-            }).then(() => ({
-                commits: {
-                    from: commits.from, 
-                    to: replaceCommit(commits.to, sha, {...newCommit.data, commit})
-                }
-            }))
-        )
-    };
-
-    const askConfirm = (sha, commit) => {
-        send('confirmPick', {
-            data: {
-                sha,
-               commit
+            pick: ({commits}, {data}) => {
+                const {sha, commit} = data.confirmed
+                const {author, committer, message, tree} = commit
+                return octokit.git.createCommit({
+                    owner,
+                    repo,
+                    message,
+                    tree: tree.sha,
+                    author,
+                    committer,
+                    parents: [getHead(commits.to)]
+                }).then((newCommit) => 
+                    octokit.git.updateRef({
+                        owner,
+                        repo,
+                        ref: `heads/${to}`,
+                        sha: newCommit.data.sha,
+                    }).then(() => ({
+                        commits: {
+                            from: commits.from, 
+                            to: replaceCommit(commits.to, sha, {...newCommit.data, commit})
+                        }
+                    }))
+                )
             }
-        })
-    }
-    return match(state, {
-        loaderror: () => <div>Error loading repositories info: {error.message}</div>,
-        loading: () => <div className="modal"><Spinner/></div>,
-        sync: () => (<div className="app">
-            <div className="title">{owner}/{repo}</div>
-            <div className="main">
-                {["from", "to"].map(branch => <div className="column" key={branch}><Commits commits={commits[branch]} branch={branches[branch]}
-                    goToIssue={goToIssue} cherryPick={askConfirm}/></div>)}
-            </div>
-            {state.matches('sync.picking') && <div className="modal"><Spinner color="orange"/></div>}
-            {state.matches('sync.askconfirm') && <Confirm message={"Do you want to cherry-pick the selected commit?"}
-                onConfirm={() => send('confirm')}
-                onCancel={() => send('cancel')}
-            />}
-            {error && <div>{error.message || error}</div>}
-        </div>)
+        }
     })
+    return <App owner={owner} repo={repo} branches={branches}/>
 }
